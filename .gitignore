@@ -1,0 +1,8 @@
+dados/
+old/
+.DS_Store
+.vscode/
+venv/
+.env
+.Rhistory
+.RData
