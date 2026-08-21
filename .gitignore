@@ -1,5 +1,6 @@
 dados/
 old/
+aux_codes_AI/
 .DS_Store
 .vscode/
 venv/
