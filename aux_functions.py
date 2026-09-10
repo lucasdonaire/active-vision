@@ -84,7 +84,8 @@ def get_df_trials(list_neuron_ids, path_destiny, list_prefered_cat, list_brain_a
     trial_sacc_time_TrialInfoIdx = 23 # tempo do inicio da primeira sacada
     rows_df = []
     for i, neuron_id in enumerate(list_neuron_ids):
-        trial_path = f'{path_destiny}\{neuron_id}.mat'
+        # trial_path = f'{path_destiny}\{neuron_id}.mat' # windows
+        trial_path = f'{path_destiny}/{neuron_id}.mat' # linux
         try:
             mat_data = sio.loadmat(trial_path)
             prefered_cat = list_prefered_cat[i]
