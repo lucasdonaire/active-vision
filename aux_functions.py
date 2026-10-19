@@ -1,7 +1,13 @@
 import numpy as np 
 import pandas as pd 
 import scipy.io as sio
+import seaborn as sns
 import traceback
+from scipy.stats import loguniform
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
+from sklearn.svm import LinearSVC
+from sklearn.metrics import balanced_accuracy_score, confusion_matrix, f1_score, matthews_corrcoef
+
 
 def parse_cell_line(line):
     parts = line.strip().split(':')
@@ -387,14 +393,13 @@ def get_df_trials_all_saccs_foveal(list_neuron_ids, path_destiny, list_prefered_
                 trial_presacc_time = trial_1sacc_time - trial_array_on_time
                 OFF_TIME_ANTERIOR = trial_1sacc_time
                 LOC_ANTERIOR = 0
-                CAT_ANTERIOR = 'FP'
+                CAT_ANTERIOR = 'fix_point'
                 for sacc_idx, sacc_data in enumerate(mat_data['SearchEye'][trial_idx][0][1:]): # 0 pq tudo ta num grande array, 1+ pq 0 é a fixação no FP
                     sti_loc_idx = sacc_data[3] # id da localização no array (0-20)
                     image_id = sacc_data[6] # id da imagem
                     image_cat = get_image_cathegory(image_id)
                     target_on_time = sacc_data[1] # tempo de quando esse objeto foi fixado
                     target_off_time = sacc_data[2] # tempo de fim da sacada
-
                     rows_df.append([
                         neuron_id,
                         prefered_cat,
@@ -457,3 +462,348 @@ def get_df_trials_all_saccs_foveal(list_neuron_ids, path_destiny, list_prefered_
         'img_cath_anterior',
         ])
     return df_trials, dicio_firings
+
+
+
+def get_df_run_ml(df_trials, start_time, end_time, bin_width, step, dicio_firings):
+    t_ends = np.arange(start_time + bin_width, end_time + step, step)
+    t_starts = t_ends - bin_width  # Para evitar calcular isto no loop
+
+    neurons_order = list(df_trials['neuron'].unique())
+    saccades_order = list(df_trials['trial+sacc'].unique())
+
+    df_indexed = df_trials.set_index(['trial+sacc', 'neuron'])
+    dict_fix_times = df_indexed['fix_time'].to_dict()
+
+    df_saccades = df_trials.drop_duplicates('trial+sacc').set_index('trial+sacc')
+    dict_cat_anterior = df_saccades['img_cath_anterior'].to_dict()
+    dict_Y_cat = df_saccades['sacc_img_cath'].to_dict()
+    dict_Y_equality = (df_saccades['sacc_img_cath'] == df_saccades['img_cath_anterior']).astype(int).to_dict()
+    dict_cue = df_saccades['cue_cath'].to_dict()
+    dict_Y_is_cue = (df_saccades['sacc_img_cath'] == df_saccades['cue_cath']).astype(int).to_dict()
+
+    dicio_firings_np = {
+        neuron: np.sort(np.array(spikes) * 1000.0) 
+        for neuron, spikes in dicio_firings.items()
+    }
+
+    data_trials_run_model = []
+    for saccade_id in saccades_order:
+        data_model_row = {
+            'Y_cat':dict_Y_cat.get(saccade_id, 0),
+            'Y_equality': dict_Y_equality.get(saccade_id, 0),
+            'Y_is_cue': dict_Y_is_cue.get(saccade_id, 0),
+            'cat_cue': dict_cue.get(saccade_id, 0),
+            'cat_anterior': dict_cat_anterior.get(saccade_id, 0),
+            'transition':f'{dict_cat_anterior.get(saccade_id, 0)}-{dict_Y_cat.get(saccade_id, 0)}'
+        }
+        
+        for neuron in neurons_order:
+            fix_time = dict_fix_times.get((saccade_id, neuron))
+            fix_time_ms = fix_time * 1000.0
+            session_spikes = dicio_firings_np[neuron][0]
+            
+            window_start_global = fix_time_ms + start_time
+            window_end_global = fix_time_ms + end_time
+            
+            idx_start = np.searchsorted(session_spikes, window_start_global)
+            idx_end = np.searchsorted(session_spikes, window_end_global)
+            
+            trial_spikes = session_spikes[idx_start:idx_end] - fix_time_ms
+            
+            for i, (t_s, t_e) in enumerate(zip(t_starts, t_ends)):
+                count = np.sum((trial_spikes >= t_s) & (trial_spikes < t_e))
+                fr = count / (bin_width / 1000.0)
+                data_model_row[f'{neuron}_Bin{i}'] = fr
+                
+        data_trials_run_model.append(data_model_row)
+
+    df_run_model = pd.DataFrame(data_trials_run_model)
+    return df_run_model
+
+
+def zscore_per_neuron(X_train, X_test):
+    X_train_z = X_train.copy()
+    X_test_z = X_test.copy()
+    neuron_ids = set([col.split('_Bin')[0] for col in X_train.columns if '_Bin' in col])
+    
+    for nid in neuron_ids:
+        cols_neuron = [col for col in X_train.columns if col.startswith(f"{nid}_Bin")]
+        train_values = X_train[cols_neuron].values.flatten()
+        
+        mu = np.mean(train_values)
+        sigma = np.std(train_values) if np.std(train_values) > 0 else 1e-8
+            
+        X_train_z[cols_neuron] = (X_train[cols_neuron] - mu) / sigma
+        X_test_z[cols_neuron] = (X_test[cols_neuron] - mu) / sigma
+        
+    return X_train_z, X_test_z
+
+
+
+
+
+
+
+
+
+
+def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_width, step, window_size_bins, num_folds=5, verbose=True):
+
+    neuron_ids = list(set([col.split('_Bin')[0] for col in df_run_model.columns if '_Bin' in col]))
+    total_bins = len([col for col in df_run_model.columns if col.startswith(f"{neuron_ids[0]}_Bin")])
+    
+    # Quantos "passos" cabem dentro de um bin? (ex: bin de 50ms, passo de 10ms -> offset = 5)
+    offset = bin_width // step
+    
+    # Se window_size_bins=1, o offset não importa. Se for 4, ele sabe pular os bins sobrepostos.
+    num_windows = total_bins - ((window_size_bins - 1) * offset)
+    
+    # 2. Mapeamento Temporal Dinâmico
+    window_centers = []
+    window_ends = []
+    for w in range(num_windows):
+        win_start_time = start_time + (w * step)
+        win_end_time = win_start_time + (window_size_bins * bin_width)
+        window_centers.append((win_start_time + win_end_time) / 2.0)
+        window_ends.append(win_end_time)
+
+    # 3. Definição Dinâmica do Tuning 
+    # Em vez de pegar um bloco gigante, pegamos a janela exata que termina em 0ms (ou a mais próxima)
+    target_tuning_time = 0 
+    
+    # Encontra o índice da janela cujo tempo final é o mais próximo de 0ms
+    idx_tuning_window = np.argmin(np.abs(np.array(window_ends) - target_tuning_time))
+    
+    # Extrai estritamente a mesma quantidade de colunas que a janela deslizante vai usar
+    offset = bin_width // step
+    tuning_bins = [idx_tuning_window + (k * offset) for k in range(window_size_bins)]
+
+
+    if decoding_type == 'CATEGORY':
+        df_work = df_run_model[df_run_model['Y_cat'] != 'fix_point'].copy().reset_index(drop=True) # para decodificar categoria, ignorar sacadas para o FP
+    else:
+        df_work = df_run_model.copy().reset_index(drop=True)
+
+    meta_cols = ['Y_cat', 'Y_equality', 'cat_anterior', 'transition', 'Y_is_cue', 'cat_cue']
+    df_meta = df_work[meta_cols]
+
+    transicao_unicos = df_meta['transition'].unique()
+    atual_unicos = df_meta['Y_cat'].unique()
+    anterior_unicos = df_meta['cat_anterior'].unique()
+    cat_cue_unicos = df_meta['cat_cue'].unique()
+    is_cue_unicos = df_meta['Y_is_cue'].unique()
+
+    X = df_work.drop(columns=meta_cols)
+    if decoding_type == 'CATEGORY':
+        y = df_work['Y_cat']
+    elif decoding_type == 'CHANGE_OF_CATEGORY':
+        y = df_work['Y_equality']
+    elif decoding_type == 'IS_CUE':
+        y = df_work['Y_is_cue']
+    elif decoding_type == 'CUE_CATEGORY':
+        y = df_run_model['cat_cue']
+    elif decoding_type == 'PREV_CATEGORY':
+        y = df_run_model['cat_anterior']
+
+
+    fold_transicao_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in transicao_unicos}
+    fold_atual_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in atual_unicos}
+    fold_anterior_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in anterior_unicos}
+    fold_cat_cue_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in cat_cue_unicos}
+    fold_is_cue_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in is_cue_unicos}
+
+
+    classes = np.unique(y)
+    num_classes = len(classes)
+    chance_level = (1.0 / num_classes) * 100
+
+    outer_cv = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=42)
+    fold_accuracies = np.zeros((num_folds, num_windows))
+    fold_cms = np.zeros((num_folds, num_windows, num_classes, num_classes))
+    fold_f1 = np.zeros((num_folds, num_windows))
+    fold_mcc = np.zeros((num_folds, num_windows))
+    fold_gm = np.zeros((num_folds, num_windows))
+
+
+    if verbose:
+        print(f"Iniciando Decoding ({num_folds} folds, {num_windows} janelas, {total_bins} bins totais)...")
+        print(f"Bins selecionados para Tuning: {tuning_bins}")
+
+    for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
+        if verbose:
+            print(f"--- Processando Fold {fold_idx + 1}/{num_folds} --- {pd.Timestamp.now().strftime('%H:%M:%S')}")
+            
+        X_train_raw, X_test_raw = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        
+        # Padronização
+        X_train_z, X_test_z = zscore_per_neuron(X_train_raw, X_test_raw)
+        
+        # Tuning Pós-Sacádico Dinâmico
+        # Usa o nome exato da coluna para evitar o bug do "endswith" 
+        post_cols = [f"{nid}_Bin{b}" for nid in neuron_ids for b in tuning_bins]
+        X_train_post = X_train_z[post_cols]
+        
+        search = RandomizedSearchCV(
+            estimator=LinearSVC(class_weight='balanced', dual=False),
+            param_distributions={'C': loguniform(1e-4, 1e2)},
+            n_iter=15,
+            cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
+            scoring='balanced_accuracy',
+            random_state=42,
+            n_jobs=-1
+        )
+        search.fit(X_train_post, y_train)
+        best_C = search.best_params_['C']
+        
+        # Treino e Avaliação nas Moving Windows
+        best_svm = LinearSVC(class_weight='balanced', C=best_C, dual=False, max_iter=2000)
+        
+        for w_idx in range(num_windows):
+            # A mágica do offset: garante que ele pega os bins isolados corretos
+            active_bins = [w_idx + (k * offset) for k in range(window_size_bins)]
+            win_cols = [f"{nid}_Bin{b}" for nid in neuron_ids for b in active_bins]
+            
+            X_tr_win = X_train_z[win_cols]
+            X_te_win = X_test_z[win_cols]
+            
+            best_svm.fit(X_tr_win, y_train)
+            preds = best_svm.predict(X_te_win)
+            
+            # Acurácia
+            acc = balanced_accuracy_score(y_test, preds)
+            fold_accuracies[fold_idx, w_idx] = acc
+            
+            # Matriz de Confusão Normalizada
+            cm = confusion_matrix(y_test, preds, labels=classes, normalize='true')
+            fold_cms[fold_idx, w_idx] = cm
+
+            # Suas métricas atuais
+            acc = balanced_accuracy_score(y_test, preds)
+            fold_accuracies[fold_idx, w_idx] = acc
+            
+            # NOVAS MÉTRICAS
+            fold_f1[fold_idx, w_idx] = f1_score(y_test, preds, average='macro')
+            mcc_raw = matthews_corrcoef(y_test, preds)
+            fold_mcc[fold_idx, w_idx] = ((mcc_raw + 1) / 2)
+
+            recalls = np.diag(cm)
+            fold_gm[fold_idx, w_idx] = np.prod(recalls) ** (1.0 / num_classes)
+
+            # AVALIANDO POR CATEGORIA
+            meta_test = df_meta.iloc[test_idx]
+            acertos = (preds == y_test.values).astype(int) 
+            for transicao in transicao_unicos:
+                mask_transicao = (meta_test['transition'] == transicao).values
+                if np.sum(mask_transicao) > 0:
+                    acuracia_transicao = np.mean(acertos[mask_transicao])
+                    fold_transicao_accuracies[transicao][fold_idx, w_idx] = acuracia_transicao
+
+            for atual in atual_unicos:
+                mask_atual = (meta_test['Y_cat'] == atual).values
+                if np.sum(mask_atual) > 0:
+                    acuracia_atual = np.mean(acertos[mask_atual])
+                    fold_atual_accuracies[atual][fold_idx, w_idx] = acuracia_atual
+
+            for anterior in anterior_unicos:
+                mask_anterior = (meta_test['cat_anterior'] == anterior).values
+                if np.sum(mask_anterior) > 0:
+                    acuracia_anterior = np.mean(acertos[mask_anterior])
+                    fold_anterior_accuracies[anterior][fold_idx, w_idx] = acuracia_anterior
+
+            for cat_cue in cat_cue_unicos:
+                mask_cat_cue = (meta_test['cat_cue'] == cat_cue).values
+                if np.sum(mask_cat_cue) > 0:
+                    acuracia_cat_cue = np.mean(acertos[mask_cat_cue])
+                    fold_cat_cue_accuracies[cat_cue][fold_idx, w_idx] = acuracia_cat_cue
+
+            for is_cue in is_cue_unicos:
+                mask_is_cue = (meta_test['Y_is_cue'] == is_cue).values
+                if np.sum(mask_is_cue) > 0:
+                    acuracia_is_cue = np.mean(acertos[mask_is_cue])
+                    fold_is_cue_accuracies[is_cue][fold_idx, w_idx] = acuracia_is_cue
+
+    mean_acc = np.mean(fold_accuracies, axis=0) * 100
+    sem_acc = (np.std(fold_accuracies, axis=0) / np.sqrt(num_folds)) * 100
+    mean_cms = np.mean(fold_cms, axis=0) * 100
+    mean_f1 = np.mean(fold_f1, axis=0) * 100
+    mean_mcc = np.mean(fold_mcc, axis=0) * 100
+    mean_gm = np.mean(fold_gm, axis=0) * 100
+    mean_transition_accuracies = {}
+    for transicao in transicao_unicos:
+        mean_transition_accuracies[transicao] = np.nanmean(fold_transicao_accuracies[transicao], axis=0) * 100
+    mean_atual_accuracies = {}
+    for atual in atual_unicos:
+        mean_atual_accuracies[atual] = np.nanmean(fold_atual_accuracies[atual], axis=0) * 100
+    mean_anterior_accuracies = {}
+    for anterior in anterior_unicos:
+        mean_anterior_accuracies[anterior] = np.nanmean(fold_anterior_accuracies[anterior], axis=0) * 100
+    mean_cat_cue_accuracies = {}
+    for cat_cue in cat_cue_unicos:
+        mean_cat_cue_accuracies[cat_cue] = np.nanmean(fold_cat_cue_accuracies[cat_cue], axis=0) * 100
+    mean_is_cue_accuracies = {}
+    for is_cue in is_cue_unicos:
+        mean_is_cue_accuracies[is_cue] = np.nanmean(fold_is_cue_accuracies[is_cue], axis=0) * 100
+    return {
+        'mean_acc': mean_acc,
+        'sem_acc': sem_acc,
+        'mean_f1': mean_f1,
+        'mean_mcc': mean_mcc,
+        'mean_gm':mean_gm,
+        'mean_acc_cat_atual': mean_atual_accuracies,
+        'mean_acc_cat_anterior': mean_anterior_accuracies,
+        'mean_acc_transition': mean_transition_accuracies,
+        'mean_acc_is_cue': mean_is_cue_accuracies,
+        'mean_acc_cat_cue': mean_cat_cue_accuracies,
+        'window_centers': np.array(window_centers),
+        'window_ends': np.array(window_ends),
+        'chance_level': chance_level,
+        'fold_accuracies': fold_accuracies * 100,
+        'mean_cms': mean_cms,
+        'classes': classes
+    }
+
+
+
+
+def plot_temporal_confusion_matrix(result_decoding, target_time_ms,str_bins=''):
+    """
+    Plota a Matriz de Confusão para o instante de tempo (causal) mais próximo do solicitado.
+    
+    Parâmetros:
+    -----------
+    result_decoding : dict (retorno da função run_temporal_decoding)
+    target_time_ms : int ou float (tempo em ms que você quer analisar, ex: 100)
+    """
+    
+    # 1. Encontra o índice da janela temporal mais próxima do target_time_ms
+    window_ends = result_decoding['window_ends']
+    idx = np.argmin(np.abs(window_ends - target_time_ms))
+    actual_time = window_ends[idx]
+    
+    # 2. Resgata a matriz e as classes exatas desse instante
+    cm = result_decoding['mean_cms'][idx]
+    classes = result_decoding['classes']
+    
+    # 3. Configura e plota o Heatmap
+    plt.figure(figsize=(7, 6))
+    
+    # annot=True mostra os números, fmt='.1f' deixa 1 casa decimal, cmap é a paleta de cores
+    sns.heatmap(cm, annot=True, fmt='.1f', cmap='Blues',
+                xticklabels=classes, yticklabels=classes,
+                cbar_kws={'label': 'Acurácia (%)'},
+                vmin=0, vmax=100)
+    
+    plt.title(f'{STR_DETAILS} | Matriz de Confusão aos {actual_time} ms | {str_bins} | Acurácia = {int(result_decoding["mean_acc"][list(result_decoding["window_ends"]).index(float(target_time_ms))])}%', fontsize=14, pad=15)
+    # plt.title(f'{STR_DETAILS} | Matriz de Confusão (Fim da Janela: {actual_time} ms) (1 Bin de 50ms) | Acurácia = {int(result_decoding["mean_acc"][list(result_decoding["window_ends"]).index(float(target_time_ms))])}%', fontsize=14, pad=15)
+    plt.ylabel('Classe Verdadeira', fontsize=12)
+    plt.xlabel('Classe Prevista pelo Modelo', fontsize=12)
+    
+    # Rotaciona os rótulos para melhor leitura
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    
+    plt.tight_layout()
+    plt.show()
+
