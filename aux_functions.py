@@ -7,6 +7,7 @@ from scipy.stats import loguniform
 from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
 from sklearn.svm import LinearSVC
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix, f1_score, matthews_corrcoef
+import matplotlib.pyplot as plt
 
 
 def parse_cell_line(line):
@@ -489,13 +490,23 @@ def get_df_run_ml(df_trials, start_time, end_time, bin_width, step, dicio_firing
 
     data_trials_run_model = []
     for saccade_id in saccades_order:
+        Y_cat = dict_Y_cat.get(saccade_id, 0)
+        Y_is_cue =  dict_Y_is_cue.get(saccade_id, 0)
+        if Y_cat in ['face','house']:
+            if Y_is_cue==1:
+                Y_attention = 'Attention'
+            else:
+                Y_attention = 'No Attention'
+        else:
+            Y_attention = 'Other Cats'
         data_model_row = {
-            'Y_cat':dict_Y_cat.get(saccade_id, 0),
+            'Y_cat': Y_cat,
             'Y_equality': dict_Y_equality.get(saccade_id, 0),
-            'Y_is_cue': dict_Y_is_cue.get(saccade_id, 0),
+            'Y_is_cue': Y_is_cue,
             'cat_cue': dict_cue.get(saccade_id, 0),
             'cat_anterior': dict_cat_anterior.get(saccade_id, 0),
-            'transition':f'{dict_cat_anterior.get(saccade_id, 0)}-{dict_Y_cat.get(saccade_id, 0)}'
+            'transition': f'{dict_cat_anterior.get(saccade_id, 0)}-{dict_Y_cat.get(saccade_id, 0)}',
+            'Y_attention': Y_attention
         }
         
         for neuron in neurons_order:
@@ -585,7 +596,7 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
     else:
         df_work = df_run_model.copy().reset_index(drop=True)
 
-    meta_cols = ['Y_cat', 'Y_equality', 'cat_anterior', 'transition', 'Y_is_cue', 'cat_cue']
+    meta_cols = ['Y_cat', 'Y_equality', 'cat_anterior', 'transition', 'Y_is_cue', 'cat_cue', 'Y_attention']
     df_meta = df_work[meta_cols]
 
     transicao_unicos = df_meta['transition'].unique()
@@ -593,6 +604,7 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
     anterior_unicos = df_meta['cat_anterior'].unique()
     cat_cue_unicos = df_meta['cat_cue'].unique()
     is_cue_unicos = df_meta['Y_is_cue'].unique()
+    attention_unicos = df_meta['Y_attention'].unique()
 
     X = df_work.drop(columns=meta_cols)
     if decoding_type == 'CATEGORY':
@@ -612,6 +624,7 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
     fold_anterior_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in anterior_unicos}
     fold_cat_cue_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in cat_cue_unicos}
     fold_is_cue_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in is_cue_unicos}
+    fold_attention_accuracies = {item: np.full((num_folds, num_windows), np.nan) for item in attention_unicos}
 
 
     classes = np.unique(y)
@@ -724,6 +737,12 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
                     acuracia_is_cue = np.mean(acertos[mask_is_cue])
                     fold_is_cue_accuracies[is_cue][fold_idx, w_idx] = acuracia_is_cue
 
+            for attention in attention_unicos:
+                mask_attention = (meta_test['Y_attention'] == attention).values
+                if np.sum(mask_attention) > 0:
+                    acuracia_attention = np.mean(acertos[mask_attention])
+                    fold_attention_accuracies[attention][fold_idx, w_idx] = acuracia_attention
+
     mean_acc = np.mean(fold_accuracies, axis=0) * 100
     sem_acc = (np.std(fold_accuracies, axis=0) / np.sqrt(num_folds)) * 100
     mean_cms = np.mean(fold_cms, axis=0) * 100
@@ -745,6 +764,9 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
     mean_is_cue_accuracies = {}
     for is_cue in is_cue_unicos:
         mean_is_cue_accuracies[is_cue] = np.nanmean(fold_is_cue_accuracies[is_cue], axis=0) * 100
+    mean_attention_accuracies = {}
+    for attention in attention_unicos:
+        mean_attention_accuracies[attention] = np.nanmean(fold_attention_accuracies[attention], axis=0) * 100
     return {
         'mean_acc': mean_acc,
         'sem_acc': sem_acc,
@@ -756,6 +778,7 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
         'mean_acc_transition': mean_transition_accuracies,
         'mean_acc_is_cue': mean_is_cue_accuracies,
         'mean_acc_cat_cue': mean_cat_cue_accuracies,
+        'mean_acc_attention': mean_attention_accuracies,
         'window_centers': np.array(window_centers),
         'window_ends': np.array(window_ends),
         'chance_level': chance_level,
@@ -767,7 +790,7 @@ def run_temporal_decoding_generic(df_run_model, decoding_type, start_time, bin_w
 
 
 
-def plot_temporal_confusion_matrix(result_decoding, target_time_ms,str_bins=''):
+def plot_temporal_confusion_matrix(result_decoding, target_time_ms,STR_DETAILS='',str_bins=''):
     """
     Plota a Matriz de Confusão para o instante de tempo (causal) mais próximo do solicitado.
     
@@ -806,4 +829,80 @@ def plot_temporal_confusion_matrix(result_decoding, target_time_ms,str_bins=''):
     
     plt.tight_layout()
     plt.show()
+
+
+
+def plot_decoding(results, STR_DETAILS=''):
+    plt.figure(figsize=(10, 5))
+    plt.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Chegada da Sacada (t=0)')
+    plt.axhline(y=results['chance_level'], color='black', linestyle=':', label=f"Chance Level ({results['chance_level']:.1f}%)")
+    plt.plot(results['window_ends'], results['mean_acc'], color='dodgerblue', linewidth=2.5, marker='o', label='SVM Linear')
+    plt.title(f'{STR_DETAILS} | Decodificabilidade (1 Bin de 50ms)', fontsize=14)
+    plt.ylabel('Acurácia (%)', fontsize=12)
+    plt.ylabel('Média Geométrica da Sensibilidade (%)', fontsize=12)
+    plt.ylim(0, 100)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_decoding_by_class(results, class_name, classes, titulo_plot, STR_DETAILS='',txt_add_title='', chance_level=25):
+    tempos = results['window_ends']
+    plt.figure(figsize=(10,6))
+    for c in classes:
+        acc_temporal = results[class_name][c]
+        plt.plot(tempos, acc_temporal, marker='o', label=c)
+    plt.axvline(x=0, color='red', linestyle='--', label='Chegada da Sacada')
+    plt.axhline(y=chance_level, color='black', linestyle='--', label='Chance level')
+    plt.ylabel('Acurácia (%)')
+    plt.xlabel('Tempo em relação à fixação (ms)')
+    plt.legend()
+    plt.title(f'{STR_DETAILS} {txt_add_title} | {titulo_plot}')
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+def plot_temporal_confusion_matrix(result_decoding, target_time_ms,STR_DETAILS='',str_bins=''):
+    """
+    Plota a Matriz de Confusão para o instante de tempo (causal) mais próximo do solicitado.
+    
+    Parâmetros:
+    -----------
+    result_decoding : dict (retorno da função run_temporal_decoding)
+    target_time_ms : int ou float (tempo em ms que você quer analisar, ex: 100)
+    """
+    
+    # 1. Encontra o índice da janela temporal mais próxima do target_time_ms
+    window_ends = result_decoding['window_ends']
+    idx = np.argmin(np.abs(window_ends - target_time_ms))
+    actual_time = window_ends[idx]
+    
+    # 2. Resgata a matriz e as classes exatas desse instante
+    cm = result_decoding['mean_cms'][idx]
+    classes = result_decoding['classes']
+    
+    # 3. Configura e plota o Heatmap
+    plt.figure(figsize=(7, 6))
+    
+    # annot=True mostra os números, fmt='.1f' deixa 1 casa decimal, cmap é a paleta de cores
+    sns.heatmap(cm, annot=True, fmt='.1f', cmap='Blues',
+                xticklabels=classes, yticklabels=classes,
+                cbar_kws={'label': 'Acurácia (%)'},
+                vmin=0, vmax=100)
+    
+    plt.title(f'{STR_DETAILS} | Matriz de Confusão aos {actual_time} ms | {str_bins} | Acurácia = {int(result_decoding["mean_acc"][list(result_decoding["window_ends"]).index(float(target_time_ms))])}%', fontsize=14, pad=15)
+    # plt.title(f'{STR_DETAILS} | Matriz de Confusão (Fim da Janela: {actual_time} ms) (1 Bin de 50ms) | Acurácia = {int(result_decoding["mean_acc"][list(result_decoding["window_ends"]).index(float(target_time_ms))])}%', fontsize=14, pad=15)
+    plt.ylabel('Classe Verdadeira', fontsize=12)
+    plt.xlabel('Classe Prevista pelo Modelo', fontsize=12)
+    
+    # Rotaciona os rótulos para melhor leitura
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_multiple_CM(res, list_target_times, STR_DETAILS='',str_bins=''):
+    for target_time in list_target_times:
+        plot_temporal_confusion_matrix(res, target_time_ms=target_time,STR_DETAILS=STR_DETAILS,str_bins=str_bins)
 
