@@ -78,63 +78,63 @@ def get_image_cathegory(image_id):
     return {1:'flower',2:'house',3:'face',4:'hand',9:'fix_point'}[image_id // 1000]
 
 
-## FIRST SACCADE ONLY
-def get_df_trials(list_neuron_ids, path_destiny, list_prefered_cat, list_brain_area, list_RF_type, firings_cue_and_array=False):
-    trial_num_TrialInfoIdx = 0 # Numero da trial
-    trial_clue_imgid_TrialInfoIdx = 4 # Id da foto da pista
-    trial_FP_on_time_TrialInfoIdx =  17 # Fixation point na tela
-    trial_fix_FP_TrialInfoIdx =  18 # Macaco fixa o FP
-    trial_clue_on_time_TrialInfoIdx = 19 # pista aparece
-    trial_clue_off_time_TrialInfoIdx = 20 # pista desaparece
-    trial_FP_back_time_TrialInfoIdx =  21 # Fixation point reaparece
-    trial_array_on_time_TrialInfoIdx = 22 # array aparece
-    trial_sacc_time_TrialInfoIdx = 23 # tempo do inicio da primeira sacada
-    rows_df = []
-    for i, neuron_id in enumerate(list_neuron_ids):
-        # trial_path = f'{path_destiny}\{neuron_id}.mat' # windows
-        trial_path = f'{path_destiny}/{neuron_id}.mat' # linux
-        try:
-            mat_data = sio.loadmat(trial_path)
-            prefered_cat = list_prefered_cat[i]
-            brain_area = list_brain_area[i]
-            RF_type = list_RF_type[i]
-            for trial_idx, trial_data in enumerate(mat_data['TrlInfoMatrix']):
-                if mat_data['SearchEye'][trial_idx][0].shape[1] != 8:
-                    continue
-                else:
-                    trial_num = int(trial_data[trial_num_TrialInfoIdx])
-                    trial_clue_imgid = trial_data[trial_clue_imgid_TrialInfoIdx]
-                    trial_FP_on_time = trial_data[trial_FP_on_time_TrialInfoIdx]
-                    trial_fix_FP = trial_data[trial_fix_FP_TrialInfoIdx]
-                    trial_clue_on_time = trial_data[trial_clue_on_time_TrialInfoIdx]
-                    trial_clue_off_time = trial_data[trial_clue_off_time_TrialInfoIdx]
-                    trial_FP_back_time = trial_data[trial_FP_back_time_TrialInfoIdx]
-                    trial_array_on_time = trial_data[trial_array_on_time_TrialInfoIdx]
-                    trial_sacc_time = trial_data[trial_sacc_time_TrialInfoIdx]
-                    if pd.isnull(trial_sacc_time): continue
-                    trial_photo_1sacc_imgid = mat_data['SearchEye'][trial_idx][0][1][6] # 0 pq ta tudo num array so, 1 primeira sacada (0 é fixacao), 6 id da foto da primeira sacada
-                    trial_time_end_1fix = mat_data['SearchEye'][trial_idx][0][1][2] # 0 pq ta tudo num array so, 1 primeira sacada, 2 é tempo de finalizacao da fixacao # quando ele para de fixar o primeiro alvo (seja pq a trial acabou, seja pq ele fez uma segunda sacada). nao olharemos mais do que isso.
-                    trial_time_start_1fix = mat_data['SearchEye'][trial_idx][0][1][1] # 0 pq ta tudo num array so, 1 primeira sacada, 1 é tempo de começo da fixacao # quando ele para de fixar o primeiro alvo (seja pq a trial acabou, seja pq ele fez uma segunda sacada). nao olharemos mais do que isso.
-                    firings = mat_data['neuron'][(mat_data['neuron'] >= trial_FP_on_time) & (mat_data['neuron'] <= trial_time_end_1fix)] # desde o começo do FP ate o final da primeira sacada
-                    clue_cathegory = get_image_cathegory(trial_clue_imgid)
-                    photo_1sacc_cathegory = get_image_cathegory(trial_photo_1sacc_imgid)
-                    trial_presacc_time = trial_sacc_time - trial_array_on_time
-                    if firings_cue_and_array:
-                        firings_cue = [item - trial_clue_on_time for item in firings] # 0 = cue onset
-                        firings_array = [item - trial_array_on_time for item in firings] # 0 = array onset
-                        firings = [item - trial_sacc_time for item in firings] # 0 = beggining of saccade
-                        rows_df.append([neuron_id,prefered_cat,brain_area,RF_type,trial_num,trial_clue_imgid,clue_cathegory,trial_photo_1sacc_imgid,photo_1sacc_cathegory,trial_presacc_time,trial_FP_on_time,trial_fix_FP,trial_clue_on_time,trial_clue_off_time,trial_FP_back_time,trial_array_on_time,trial_sacc_time,trial_time_start_1fix,trial_time_end_1fix,firings,firings_cue,firings_array]) 
-                    else:
-                        firings = [item - trial_sacc_time for item in firings]
-                        rows_df.append([neuron_id,prefered_cat,brain_area,RF_type,trial_num,trial_clue_imgid,clue_cathegory,trial_photo_1sacc_imgid,photo_1sacc_cathegory,trial_presacc_time,trial_FP_on_time,trial_fix_FP,trial_clue_on_time,trial_clue_off_time,trial_FP_back_time,trial_array_on_time,trial_sacc_time,trial_time_start_1fix,trial_time_end_1fix,firings]) 
-        except Exception as e:
-            print('ERRO!!!', neuron_id)
-            print(traceback.format_exc())
-    if firings_cue_and_array:
-        df_trials = pd.DataFrame(rows_df, columns=['neuron','prefered','brain_area','RF_type','trial_num','clue_id','clue_cath','imgsacc_id','imgsacc_cath','pre_sacc_time','FP_on','fix_FP','clue_on','clue_off','FP_back','array_on','sacc_start','start_first_fix','end_first_fix','firings','firings_cue','firings_array'])
-    else:
-        df_trials = pd.DataFrame(rows_df, columns=['neuron','prefered','brain_area','RF_type','trial_num','clue_id','clue_cath','imgsacc_id','imgsacc_cath','pre_sacc_time','FP_on','fix_FP','clue_on','clue_off','FP_back','array_on','sacc_start','start_first_fix','end_first_fix','firings'])
-    return df_trials
+# ## FIRST SACCADE ONLY
+# def get_df_trials(list_neuron_ids, path_destiny, list_prefered_cat, list_brain_area, list_RF_type, firings_cue_and_array=False):
+#     trial_num_TrialInfoIdx = 0 # Numero da trial
+#     trial_clue_imgid_TrialInfoIdx = 4 # Id da foto da pista
+#     trial_FP_on_time_TrialInfoIdx =  17 # Fixation point na tela
+#     trial_fix_FP_TrialInfoIdx =  18 # Macaco fixa o FP
+#     trial_clue_on_time_TrialInfoIdx = 19 # pista aparece
+#     trial_clue_off_time_TrialInfoIdx = 20 # pista desaparece
+#     trial_FP_back_time_TrialInfoIdx =  21 # Fixation point reaparece
+#     trial_array_on_time_TrialInfoIdx = 22 # array aparece
+#     trial_sacc_time_TrialInfoIdx = 23 # tempo do inicio da primeira sacada
+#     rows_df = []
+#     for i, neuron_id in enumerate(list_neuron_ids):
+#         # trial_path = f'{path_destiny}\{neuron_id}.mat' # windows
+#         trial_path = f'{path_destiny}/{neuron_id}.mat' # linux
+#         try:
+#             mat_data = sio.loadmat(trial_path)
+#             prefered_cat = list_prefered_cat[i]
+#             brain_area = list_brain_area[i]
+#             RF_type = list_RF_type[i]
+#             for trial_idx, trial_data in enumerate(mat_data['TrlInfoMatrix']):
+#                 if mat_data['SearchEye'][trial_idx][0].shape[1] != 8:
+#                     continue
+#                 else:
+#                     trial_num = int(trial_data[trial_num_TrialInfoIdx])
+#                     trial_clue_imgid = trial_data[trial_clue_imgid_TrialInfoIdx]
+#                     trial_FP_on_time = trial_data[trial_FP_on_time_TrialInfoIdx]
+#                     trial_fix_FP = trial_data[trial_fix_FP_TrialInfoIdx]
+#                     trial_clue_on_time = trial_data[trial_clue_on_time_TrialInfoIdx]
+#                     trial_clue_off_time = trial_data[trial_clue_off_time_TrialInfoIdx]
+#                     trial_FP_back_time = trial_data[trial_FP_back_time_TrialInfoIdx]
+#                     trial_array_on_time = trial_data[trial_array_on_time_TrialInfoIdx]
+#                     trial_sacc_time = trial_data[trial_sacc_time_TrialInfoIdx]
+#                     if pd.isnull(trial_sacc_time): continue
+#                     trial_photo_1sacc_imgid = mat_data['SearchEye'][trial_idx][0][1][6] # 0 pq ta tudo num array so, 1 primeira sacada (0 é fixacao), 6 id da foto da primeira sacada
+#                     trial_time_end_1fix = mat_data['SearchEye'][trial_idx][0][1][2] # 0 pq ta tudo num array so, 1 primeira sacada, 2 é tempo de finalizacao da fixacao # quando ele para de fixar o primeiro alvo (seja pq a trial acabou, seja pq ele fez uma segunda sacada). nao olharemos mais do que isso.
+#                     trial_time_start_1fix = mat_data['SearchEye'][trial_idx][0][1][1] # 0 pq ta tudo num array so, 1 primeira sacada, 1 é tempo de começo da fixacao # quando ele para de fixar o primeiro alvo (seja pq a trial acabou, seja pq ele fez uma segunda sacada). nao olharemos mais do que isso.
+#                     firings = mat_data['neuron'][(mat_data['neuron'] >= trial_FP_on_time) & (mat_data['neuron'] <= trial_time_end_1fix)] # desde o começo do FP ate o final da primeira sacada
+#                     clue_cathegory = get_image_cathegory(trial_clue_imgid)
+#                     photo_1sacc_cathegory = get_image_cathegory(trial_photo_1sacc_imgid)
+#                     trial_presacc_time = trial_sacc_time - trial_array_on_time
+#                     if firings_cue_and_array:
+#                         firings_cue = [item - trial_clue_on_time for item in firings] # 0 = cue onset
+#                         firings_array = [item - trial_array_on_time for item in firings] # 0 = array onset
+#                         firings = [item - trial_sacc_time for item in firings] # 0 = beggining of saccade
+#                         rows_df.append([neuron_id,prefered_cat,brain_area,RF_type,trial_num,trial_clue_imgid,clue_cathegory,trial_photo_1sacc_imgid,photo_1sacc_cathegory,trial_presacc_time,trial_FP_on_time,trial_fix_FP,trial_clue_on_time,trial_clue_off_time,trial_FP_back_time,trial_array_on_time,trial_sacc_time,trial_time_start_1fix,trial_time_end_1fix,firings,firings_cue,firings_array]) 
+#                     else:
+#                         firings = [item - trial_sacc_time for item in firings]
+#                         rows_df.append([neuron_id,prefered_cat,brain_area,RF_type,trial_num,trial_clue_imgid,clue_cathegory,trial_photo_1sacc_imgid,photo_1sacc_cathegory,trial_presacc_time,trial_FP_on_time,trial_fix_FP,trial_clue_on_time,trial_clue_off_time,trial_FP_back_time,trial_array_on_time,trial_sacc_time,trial_time_start_1fix,trial_time_end_1fix,firings]) 
+#         except Exception as e:
+#             print('ERRO!!!', neuron_id)
+#             print(traceback.format_exc())
+#     if firings_cue_and_array:
+#         df_trials = pd.DataFrame(rows_df, columns=['neuron','prefered','brain_area','RF_type','trial_num','clue_id','clue_cath','imgsacc_id','imgsacc_cath','pre_sacc_time','FP_on','fix_FP','clue_on','clue_off','FP_back','array_on','sacc_start','start_first_fix','end_first_fix','firings','firings_cue','firings_array'])
+#     else:
+#         df_trials = pd.DataFrame(rows_df, columns=['neuron','prefered','brain_area','RF_type','trial_num','clue_id','clue_cath','imgsacc_id','imgsacc_cath','pre_sacc_time','FP_on','fix_FP','clue_on','clue_off','FP_back','array_on','sacc_start','start_first_fix','end_first_fix','firings'])
+#     return df_trials
 
 
 
@@ -230,130 +230,130 @@ def preprocess_spikes(spike_times, start_time=-500, end_time=0, sigma=15, bin_st
 
 
 
-def get_df_trials_all_saccs(list_neuron_ids, path_destiny, list_prefered_cat, list_brain_area, list_RF_type, list_RF_IN, dicio_sacc_vectors):
-    trial_num_TrialInfoIdx = 0 # Numero da trial
-    trial_cue_imgid_TrialInfoIdx = 4 # Id da foto da pista
-    trial_FP_on_time_TrialInfoIdx =  17 # Fixation point na tela
-    trial_fix_FP_TrialInfoIdx =  18 # Macaco fixa o FP
-    trial_cue_on_time_TrialInfoIdx = 19 # pista aparece
-    trial_cue_off_time_TrialInfoIdx = 20 # pista desaparece
-    trial_FP_back_time_TrialInfoIdx =  21 # Fixation point reaparece
-    trial_array_on_time_TrialInfoIdx = 22 # array aparece
-    trial_1sacc_time_TrialInfoIdx = 23 # tempo do inicio da primeira sacada
-    rows_df = []
-    dicio_firings = {}
-    for i, neuron_id in enumerate(list_neuron_ids):
-        trial_path = f'{path_destiny}/{neuron_id}.mat' 
-        try:
-            mat_data = sio.loadmat(trial_path)
-            prefered_cat = list_prefered_cat[i]
-            brain_area = list_brain_area[i]
-            RF_type = list_RF_type[i]
-            RF_in = list_RF_IN[i]
-            if pd.isnull(RF_in):
-                ROWS_RF_IN = [False]* 21
-            else:
-                RF_in_list = RF_in.split(',')
-                ROWS_RF_IN = [str(index_rf) in RF_in_list for index_rf in range(21)]
-            dicio_firings[neuron_id] = mat_data['neuron']
-            for trial_idx, trial_data in enumerate(mat_data['TrlInfoMatrix']):
-                if mat_data['SearchEye'][trial_idx][0].shape[1] != 8: # trial problematica
-                    continue
-                trial_1sacc_time = trial_data[trial_1sacc_time_TrialInfoIdx]
-                if pd.isnull(trial_1sacc_time): continue
-                trial_num = int(trial_data[trial_num_TrialInfoIdx])
-                trial_cue_imgid = trial_data[trial_cue_imgid_TrialInfoIdx]
-                trial_FP_on_time = trial_data[trial_FP_on_time_TrialInfoIdx]
-                trial_fix_FP = trial_data[trial_fix_FP_TrialInfoIdx]
-                trial_cue_on_time = trial_data[trial_cue_on_time_TrialInfoIdx]
-                trial_cue_off_time = trial_data[trial_cue_off_time_TrialInfoIdx]
-                trial_FP_back_time = trial_data[trial_FP_back_time_TrialInfoIdx]
-                trial_array_on_time = trial_data[trial_array_on_time_TrialInfoIdx]
-                cue_category = get_image_cathegory(trial_cue_imgid)
-                trial_presacc_time = trial_1sacc_time - trial_array_on_time
-                OFF_TIME_ANTERIOR = trial_1sacc_time
-                LOC_ANTERIOR = 0
-                CAT_ANTERIOR = 'FP'
-                for sacc_idx, sacc_data in enumerate(mat_data['SearchEye'][trial_idx][0][1:]): # 0 pq tudo ta num grande array, 1+ pq 0 é a fixação no FP
-                    sti_loc_idx = sacc_data[3] # id da localização no array (0-20)
-                    image_id = sacc_data[6] # id da imagem
-                    image_cat = get_image_cathegory(image_id)
-                    target_on_time = sacc_data[1] # tempo de quando esse objeto foi fixado
-                    target_off_time = sacc_data[2] # tempo de fim da sacada
-                    SACC_VECTOR = dicio_sacc_vectors[(LOC_ANTERIOR, sti_loc_idx)]
-                    VECTOR_IN_RF = False
-                    if not pd.isnull(SACC_VECTOR):
-                        VECTOR_IN_RF = ROWS_RF_IN[int(SACC_VECTOR)]
-                    rows_df.append([
-                        neuron_id,
-                        prefered_cat,
-                        brain_area,
-                        RF_type,
-                        RF_in,
-                        trial_num,
-                        trial_cue_imgid,
-                        cue_category,
-                        trial_presacc_time,
-                        trial_FP_on_time,
-                        trial_fix_FP,
-                        trial_cue_on_time,
-                        trial_cue_off_time,
-                        trial_FP_back_time,
-                        trial_array_on_time,
-                        trial_1sacc_time,
-                        sacc_idx,
-                        f'{trial_num}_{sacc_idx}',
-                        sti_loc_idx,
-                        image_id,
-                        image_cat,
-                        OFF_TIME_ANTERIOR,
-                        target_on_time,
-                        target_off_time,
-                        LOC_ANTERIOR,
-                        CAT_ANTERIOR,
-                        SACC_VECTOR,
-                        VECTOR_IN_RF,
-                        ])
-                    OFF_TIME_ANTERIOR = target_off_time # depois de guardar a row, atualiza o tempo de Saída da sacada para o próximo
-                    LOC_ANTERIOR = sti_loc_idx
-                    CAT_ANTERIOR = image_cat
+# def get_df_trials_all_saccs(list_neuron_ids, path_destiny, list_prefered_cat, list_brain_area, list_RF_type, list_RF_IN, dicio_sacc_vectors):
+#     trial_num_TrialInfoIdx = 0 # Numero da trial
+#     trial_cue_imgid_TrialInfoIdx = 4 # Id da foto da pista
+#     trial_FP_on_time_TrialInfoIdx =  17 # Fixation point na tela
+#     trial_fix_FP_TrialInfoIdx =  18 # Macaco fixa o FP
+#     trial_cue_on_time_TrialInfoIdx = 19 # pista aparece
+#     trial_cue_off_time_TrialInfoIdx = 20 # pista desaparece
+#     trial_FP_back_time_TrialInfoIdx =  21 # Fixation point reaparece
+#     trial_array_on_time_TrialInfoIdx = 22 # array aparece
+#     trial_1sacc_time_TrialInfoIdx = 23 # tempo do inicio da primeira sacada
+#     rows_df = []
+#     dicio_firings = {}
+#     for i, neuron_id in enumerate(list_neuron_ids):
+#         trial_path = f'{path_destiny}/{neuron_id}.mat' 
+#         try:
+#             mat_data = sio.loadmat(trial_path)
+#             prefered_cat = list_prefered_cat[i]
+#             brain_area = list_brain_area[i]
+#             RF_type = list_RF_type[i]
+#             RF_in = list_RF_IN[i]
+#             if pd.isnull(RF_in):
+#                 ROWS_RF_IN = [False]* 21
+#             else:
+#                 RF_in_list = RF_in.split(',')
+#                 ROWS_RF_IN = [str(index_rf) in RF_in_list for index_rf in range(21)]
+#             dicio_firings[neuron_id] = mat_data['neuron']
+#             for trial_idx, trial_data in enumerate(mat_data['TrlInfoMatrix']):
+#                 if mat_data['SearchEye'][trial_idx][0].shape[1] != 8: # trial problematica
+#                     continue
+#                 trial_1sacc_time = trial_data[trial_1sacc_time_TrialInfoIdx]
+#                 if pd.isnull(trial_1sacc_time): continue
+#                 trial_num = int(trial_data[trial_num_TrialInfoIdx])
+#                 trial_cue_imgid = trial_data[trial_cue_imgid_TrialInfoIdx]
+#                 trial_FP_on_time = trial_data[trial_FP_on_time_TrialInfoIdx]
+#                 trial_fix_FP = trial_data[trial_fix_FP_TrialInfoIdx]
+#                 trial_cue_on_time = trial_data[trial_cue_on_time_TrialInfoIdx]
+#                 trial_cue_off_time = trial_data[trial_cue_off_time_TrialInfoIdx]
+#                 trial_FP_back_time = trial_data[trial_FP_back_time_TrialInfoIdx]
+#                 trial_array_on_time = trial_data[trial_array_on_time_TrialInfoIdx]
+#                 cue_category = get_image_cathegory(trial_cue_imgid)
+#                 OFF_TIME_ANTERIOR = trial_1sacc_time
+#                 trial_presacc_time = trial_1sacc_time - trial_array_on_time
+#                 LOC_ANTERIOR = 0
+#                 CAT_ANTERIOR = 'FP'
+#                 for sacc_idx, sacc_data in enumerate(mat_data['SearchEye'][trial_idx][0][1:]): # 0 pq tudo ta num grande array, 1+ pq 0 é a fixação no FP
+#                     sti_loc_idx = sacc_data[3] # id da localização no array (0-20)
+#                     image_id = sacc_data[6] # id da imagem
+#                     image_cat = get_image_cathegory(image_id)
+#                     target_on_time = sacc_data[1] # tempo de quando esse objeto foi fixado
+#                     target_off_time = sacc_data[2] # tempo de fim da sacada
+#                     SACC_VECTOR = dicio_sacc_vectors[(LOC_ANTERIOR, sti_loc_idx)]
+#                     VECTOR_IN_RF = False
+#                     if not pd.isnull(SACC_VECTOR):
+#                         VECTOR_IN_RF = ROWS_RF_IN[int(SACC_VECTOR)]
+#                     rows_df.append([
+#                         neuron_id,
+#                         prefered_cat,
+#                         brain_area,
+#                         RF_type,
+#                         RF_in,
+#                         trial_num,
+#                         trial_cue_imgid,
+#                         cue_category,
+#                         trial_presacc_time,
+#                         trial_FP_on_time,
+#                         trial_fix_FP,
+#                         trial_cue_on_time,
+#                         trial_cue_off_time,
+#                         trial_FP_back_time,
+#                         trial_array_on_time,
+#                         trial_1sacc_time,
+#                         sacc_idx,
+#                         f'{trial_num}_{sacc_idx}',
+#                         sti_loc_idx,
+#                         image_id,
+#                         image_cat,
+#                         OFF_TIME_ANTERIOR,
+#                         target_on_time,
+#                         target_off_time,
+#                         LOC_ANTERIOR,
+#                         CAT_ANTERIOR,
+#                         SACC_VECTOR,
+#                         VECTOR_IN_RF,
+#                         ])
+#                     OFF_TIME_ANTERIOR = target_off_time # depois de guardar a row, atualiza o tempo de Saída da sacada para o próximo
+#                     LOC_ANTERIOR = sti_loc_idx
+#                     CAT_ANTERIOR = image_cat
 
-        except Exception as e:
-            print('ERRO!!!', neuron_id) 
-            print(traceback.format_exc())
-            raise e
+#         except Exception as e:
+#             print('ERRO!!!', neuron_id) 
+#             print(traceback.format_exc())
+#             raise e
 
-    df_trials = pd.DataFrame(rows_df, columns=[
-        'neuron',
-        'prefered',
-        'brain_area',
-        'RF_type',
-        'RF_in',
-        'trial_num',
-        'cue_id',
-        'cue_cath',
-        'pre_sacc_time',
-        'FP_on',
-        'fix_FP',
-        'cue_on',
-        'cue_off',
-        'FP_back',
-        'array_on',
-        '1sacc_start',
-        'sacc_num',
-        'trial+sacc',
-        'sacc_stim_loc',
-        'sacc_img_id',
-        'sacc_img_cath',
-        'sacc_start_time',
-        'fix_time',
-        'fix_end_time',
-        'stim_loc_anterior',
-        'img_cath_anterior',
-        'saccade_vector',
-        'vector_in_RF'
-        ])
-    return df_trials, dicio_firings
+#     df_trials = pd.DataFrame(rows_df, columns=[
+#         'neuron',
+#         'prefered',
+#         'brain_area',
+#         'RF_type',
+#         'RF_in',
+#         'trial_num',
+#         'cue_id',
+#         'cue_cath',
+#         'pre_sacc_time',
+#         'FP_on',
+#         'fix_FP',
+#         'cue_on',
+#         'cue_off',
+#         'FP_back',
+#         'array_on',
+#         '1sacc_start',
+#         'sacc_num',
+#         'trial+sacc',
+#         'sacc_stim_loc',
+#         'sacc_img_id',
+#         'sacc_img_cath',
+#         'sacc_start_time',
+#         'fix_time',
+#         'fix_end_time',
+#         'stim_loc_anterior',
+#         'img_cath_anterior',
+#         'saccade_vector',
+#         'vector_in_RF'
+#         ])
+#     return df_trials, dicio_firings
 
 
 
@@ -392,17 +392,18 @@ def get_df_trials_all_saccs_foveal(list_neuron_ids, path_destiny, list_prefered_
                 trial_FP_back_time = trial_data[trial_FP_back_time_TrialInfoIdx]
                 trial_array_on_time = trial_data[trial_array_on_time_TrialInfoIdx]
                 cue_category = get_image_cathegory(trial_cue_imgid)
-                trial_presacc_time = trial_1sacc_time - trial_array_on_time
                 OFF_TIME_ANTERIOR = trial_1sacc_time
                 LOC_ANTERIOR = 0
                 CAT_ANTERIOR = 'fix_point'
+                # trial_presacc_time = trial_1sacc_time - trial_array_on_time
                 for sacc_idx, sacc_data in enumerate(mat_data['SearchEye'][trial_idx][0][1:]): # 0 pq tudo ta num grande array, 1+ pq 0 é a fixação no FP
                     sti_loc_idx = sacc_data[3] # id da localização no array (0-20)
                     image_id = sacc_data[6] # id da imagem
                     image_cat = get_image_cathegory(image_id)
                     target_on_time = sacc_data[1] # tempo de quando esse objeto foi fixado
                     target_off_time = sacc_data[2] # tempo de fim da sacada
-                    EVENT_INDEX = f'{SESSION}_{trial_idx}_{sacc_idx}'
+                    SACCADE_presacc_time = target_on_time - OFF_TIME_ANTERIOR
+                    EVENT_INDEX = f'{SESSION}_{trial_num}_{sacc_idx}'
                     rows_df.append([
                         neuron_id,
                         prefered_cat,
@@ -411,7 +412,7 @@ def get_df_trials_all_saccs_foveal(list_neuron_ids, path_destiny, list_prefered_
                         trial_num,
                         trial_cue_imgid,
                         cue_category,
-                        trial_presacc_time,
+                        SACCADE_presacc_time,
                         trial_FP_on_time,
                         trial_fix_FP,
                         trial_cue_on_time,
